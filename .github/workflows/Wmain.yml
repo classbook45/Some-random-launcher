@@ -1,0 +1,547 @@
+name: build-launcher
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Generate project files
+        run: |
+          mkdir -p app/src/main/java/dev/test/launcher app/src/main/res/drawable app/src/main/res/xml app/src/main/res/values
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "NeonLauncher"
+          include ':app'
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.5.2' apply false }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=false
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+            namespace 'dev.test.launcher'
+            compileSdk 34
+            defaultConfig {
+              applicationId 'dev.test.launcher'
+              minSdk 24
+              targetSdk 33
+              versionCode 1
+              versionName '1.0'
+            }
+            compileOptions {
+              sourceCompatibility JavaVersion.VERSION_17
+              targetCompatibility JavaVersion.VERSION_17
+            }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+            <uses-feature android:name="android.software.leanback" android:required="false" />
+            <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+            <queries>
+              <intent>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+              </intent>
+              <intent>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+              </intent>
+            </queries>
+            <application
+              android:label="Neon Launcher"
+              android:icon="@drawable/ic_launcher"
+              android:banner="@drawable/banner"
+              android:allowBackup="false"
+              android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+              <activity
+                android:name=".MainActivity"
+                android:exported="true"
+                android:launchMode="singleTask"
+                android:stateNotNeeded="true"
+                android:screenOrientation="landscape">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN" />
+                  <category android:name="android.intent.category.HOME" />
+                  <category android:name="android.intent.category.DEFAULT" />
+                </intent-filter>
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN" />
+                  <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+                  <category android:name="android.intent.category.LAUNCHER" />
+                </intent-filter>
+              </activity>
+              <receiver android:name=".BootReceiver" android:exported="true">
+                <intent-filter>
+                  <action android:name="android.intent.action.BOOT_COMPLETED" />
+                </intent-filter>
+              </receiver>
+              <service
+                android:name=".HomeKeyService"
+                android:exported="true"
+                android:label="Neon Home Key"
+                android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                <intent-filter>
+                  <action android:name="android.accessibilityservice.AccessibilityService" />
+                </intent-filter>
+                <meta-data
+                  android:name="android.accessibilityservice"
+                  android:resource="@xml/home_service" />
+              </service>
+            </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/drawable/ic_launcher.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+            android:width="108dp" android:height="108dp"
+            android:viewportWidth="108" android:viewportHeight="108">
+            <path android:fillColor="#020B06" android:pathData="M0,0h108v108h-108z" />
+            <path android:fillColor="#00FF9C" android:pathData="M30,34h10v40h-10zM68,34h10v40h-10zM30,34h10l38,40h-10z" />
+          </vector>
+          EOF
+
+          cat > app/src/main/res/drawable/banner.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+            android:width="320dp" android:height="180dp"
+            android:viewportWidth="320" android:viewportHeight="180">
+            <path android:fillColor="#020B06" android:pathData="M0,0h320v180h-320z" />
+            <path android:fillColor="#00FF9C" android:pathData="M120,50h16v80h-16zM184,50h16v80h-16zM120,50h16l64,80h-16z" />
+          </vector>
+          EOF
+
+          cat > app/src/main/res/values/strings.xml <<'EOF'
+          <resources>
+            <string name="svc_desc">Sends the Home button to Neon Launcher.</string>
+          </resources>
+          EOF
+
+          cat > app/src/main/res/xml/home_service.xml <<'EOF'
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+            android:accessibilityEventTypes="typeWindowStateChanged"
+            android:accessibilityFeedbackType="feedbackGeneric"
+            android:accessibilityFlags="flagRequestFilterKeyEvents"
+            android:canRequestFilterKeyEvents="true"
+            android:notificationTimeout="100"
+            android:description="@string/svc_desc" />
+          EOF
+
+          cat > app/src/main/java/dev/test/launcher/HomeKeyService.java <<'EOF'
+          package dev.test.launcher;
+
+          import android.accessibilityservice.AccessibilityService;
+          import android.content.Intent;
+          import android.view.KeyEvent;
+          import android.view.accessibility.AccessibilityEvent;
+
+          public class HomeKeyService extends AccessibilityService {
+            @Override
+            public void onAccessibilityEvent(AccessibilityEvent e) { }
+
+            @Override
+            public void onInterrupt() { }
+
+            @Override
+            protected boolean onKeyEvent(KeyEvent e) {
+              if (e.getKeyCode() != KeyEvent.KEYCODE_HOME) return false;
+              if (e.getAction() == KeyEvent.ACTION_UP) {
+                startActivity(new Intent(this, MainActivity.class).addFlags(
+                  Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                  | Intent.FLAG_ACTIVITY_SINGLE_TOP));
+              }
+              return true;
+            }
+          }
+          EOF
+
+          cat > app/src/main/java/dev/test/launcher/BootReceiver.java <<'EOF'
+          package dev.test.launcher;
+
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.content.pm.ResolveInfo;
+
+          public class BootReceiver extends BroadcastReceiver {
+            @Override
+            public void onReceive(Context c, Intent i) {
+              try {
+                Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME);
+                ResolveInfo r = c.getPackageManager().resolveActivity(home, PackageManager.MATCH_DEFAULT_ONLY);
+                if (r != null && c.getPackageName().equals(r.activityInfo.packageName)) return;
+                c.startActivity(new Intent(c, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+              } catch (Exception ignored) { }
+            }
+          }
+          EOF
+
+          cat > app/src/main/java/dev/test/launcher/MatrixView.java <<'EOF'
+          package dev.test.launcher;
+
+          import android.content.Context;
+          import android.graphics.Canvas;
+          import android.graphics.Paint;
+          import android.graphics.Typeface;
+          import android.view.View;
+          import java.util.Random;
+
+          public class MatrixView extends View {
+            final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            final Random r = new Random();
+            final char[] cs = "01abcdef<>/{}[]#$%&*=+".toCharArray();
+            final int accent;
+            int cols, rows, frame;
+            int[] head;
+            float cell;
+
+            public MatrixView(Context ctx, int accent) {
+              super(ctx);
+              this.accent = accent;
+              cell = 18 * ctx.getResources().getDisplayMetrics().density;
+              p.setTypeface(Typeface.MONOSPACE);
+              p.setTextSize(cell);
+            }
+
+            @Override
+            protected void onSizeChanged(int w, int h, int ow, int oh) {
+              cols = (int) (w / cell) + 1;
+              rows = (int) (h / cell) + 1;
+              head = new int[cols];
+              for (int i = 0; i < cols; i++) head[i] = r.nextInt(rows);
+            }
+
+            @Override
+            protected void onDraw(Canvas cv) {
+              if (head == null) return;
+              frame++;
+              for (int c = 0; c < cols; c++) {
+                if (r.nextInt(3) == 0) head[c]++;
+                if (head[c] - 16 > rows) head[c] = -r.nextInt(24);
+                for (int k = 0; k < 16; k++) {
+                  int row = head[c] - k;
+                  if (row < 0 || row >= rows) continue;
+                  int a = (int) (110 * (1f - k / 16f));
+                  p.setColor((accent & 0x00FFFFFF) | (a << 24));
+                  char ch = cs[(c * 7919 + row * 104729 + frame / 10) % cs.length];
+                  cv.drawText(String.valueOf(ch), c * cell, (row + 1) * cell, p);
+                }
+              }
+              postInvalidateDelayed(70);
+            }
+          }
+          EOF
+
+          cat > app/src/main/java/dev/test/launcher/MainActivity.java <<'EOF'
+          package dev.test.launcher;
+
+          import android.app.Activity;
+          import android.app.role.RoleManager;
+          import android.content.ComponentName;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.content.pm.PackageManager;
+          import android.content.pm.ResolveInfo;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.Drawable;
+          import android.graphics.drawable.GradientDrawable;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.provider.Settings;
+          import android.text.TextUtils;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.BaseAdapter;
+          import android.widget.FrameLayout;
+          import android.widget.GridView;
+          import android.widget.ImageView;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+          import android.widget.Toast;
+          import java.text.SimpleDateFormat;
+          import java.util.ArrayList;
+          import java.util.Collections;
+          import java.util.Date;
+          import java.util.LinkedHashMap;
+          import java.util.List;
+          import java.util.Locale;
+
+          public class MainActivity extends Activity {
+            static final int[][] T = {
+              {0xFF00FF9C, 0xFF020B06}, {0xFF38BDF8, 0xFF050A14}, {0xFFFF5C8A, 0xFF12060B},
+              {0xFFFFB800, 0xFF120C00}, {0xFFC084FC, 0xFF0D0716}
+            };
+
+            static class App {
+              String label;
+              Drawable icon;
+              Intent intent;
+            }
+
+            SharedPreferences prefs;
+            int theme;
+            boolean matrix, wasDefault, wasSvc;
+            TextView clock;
+            final Handler h = new Handler(Looper.getMainLooper());
+            final List<App> apps = new ArrayList<>();
+            final SimpleDateFormat fmt = new SimpleDateFormat("HH:mm   EEE d MMM", Locale.getDefault());
+            final Runnable tick = new Runnable() {
+              public void run() {
+                if (clock != null) clock.setText(fmt.format(new Date()));
+                h.postDelayed(this, 1000);
+              }
+            };
+
+            @Override
+            protected void onCreate(Bundle b) {
+              super.onCreate(b);
+              prefs = getSharedPreferences("cfg", 0);
+              theme = prefs.getInt("theme", 0) % T.length;
+              matrix = prefs.getBoolean("matrix", true);
+              loadApps();
+              build();
+            }
+
+            @Override
+            protected void onResume() {
+              super.onResume();
+              int n = apps.size();
+              loadApps();
+              if (isDefault() != wasDefault || n != apps.size() || serviceOn() != wasSvc) build();
+              h.post(tick);
+            }
+
+            @Override
+            protected void onPause() {
+              super.onPause();
+              h.removeCallbacks(tick);
+            }
+
+            @Override
+            public void onBackPressed() { }
+
+            @Override
+            protected void onActivityResult(int req, int res, Intent d) {
+              super.onActivityResult(req, res, d);
+              build();
+            }
+
+            int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+
+            boolean isDefault() {
+              Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME);
+              ResolveInfo r = getPackageManager().resolveActivity(home, PackageManager.MATCH_DEFAULT_ONLY);
+              return r != null && getPackageName().equals(r.activityInfo.packageName);
+            }
+
+            boolean serviceOn() {
+              String s = Settings.Secure.getString(getContentResolver(), "enabled_accessibility_services");
+              return s != null && s.contains(getPackageName() + "/");
+            }
+
+            void loadApps() {
+              PackageManager pm = getPackageManager();
+              LinkedHashMap<String, App> m = new LinkedHashMap<>();
+              for (String cat : new String[] { Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER }) {
+                Intent q = new Intent(Intent.ACTION_MAIN).addCategory(cat);
+                for (ResolveInfo r : pm.queryIntentActivities(q, 0)) {
+                  String pkg = r.activityInfo.packageName;
+                  if (pkg.equals(getPackageName()) || m.containsKey(pkg)) continue;
+                  App a = new App();
+                  a.label = String.valueOf(r.loadLabel(pm));
+                  a.icon = r.loadIcon(pm);
+                  a.intent = new Intent(Intent.ACTION_MAIN)
+                    .setComponent(new ComponentName(pkg, r.activityInfo.name))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                  m.put(pkg, a);
+                }
+              }
+              apps.clear();
+              apps.addAll(m.values());
+              Collections.sort(apps, (x, y) -> x.label.compareToIgnoreCase(y.label));
+            }
+
+            GradientDrawable box(int fill, int stroke) {
+              GradientDrawable g = new GradientDrawable();
+              g.setColor(fill);
+              g.setCornerRadius(dp(10));
+              g.setStroke(dp(2), stroke);
+              return g;
+            }
+
+            TextView pill(String text, int accent, int bg, View.OnClickListener l) {
+              TextView v = new TextView(this);
+              v.setText(text);
+              v.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+              v.setTextSize(16);
+              v.setTextColor(accent);
+              v.setPadding(dp(20), dp(10), dp(20), dp(10));
+              v.setFocusable(true);
+              v.setClickable(true);
+              v.setBackground(box(0x00000000, accent));
+              v.setOnFocusChangeListener((x, f) -> {
+                v.setBackground(f ? box(accent, accent) : box(0x00000000, accent));
+                v.setTextColor(f ? bg : accent);
+              });
+              v.setOnClickListener(l);
+              LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+              lp.leftMargin = dp(12);
+              v.setLayoutParams(lp);
+              return v;
+            }
+
+            void requestDefault() {
+              try {
+                if (Build.VERSION.SDK_INT >= 29) {
+                  RoleManager rm = (RoleManager) getSystemService(Context.ROLE_SERVICE);
+                  if (rm != null && rm.isRoleAvailable(RoleManager.ROLE_HOME)) {
+                    startActivityForResult(rm.createRequestRoleIntent(RoleManager.ROLE_HOME), 1);
+                    return;
+                  }
+                }
+              } catch (Exception ignored) { }
+              try {
+                startActivity(new Intent(Settings.ACTION_HOME_SETTINGS));
+                return;
+              } catch (Exception ignored) { }
+              Toast.makeText(this,
+                "adb shell cmd package set-home-activity dev.test.launcher/.MainActivity",
+                Toast.LENGTH_LONG).show();
+            }
+
+            void build() {
+              final int accent = T[theme][0], bg = T[theme][1];
+              wasDefault = isDefault();
+              wasSvc = serviceOn();
+
+              FrameLayout root = new FrameLayout(this);
+              root.setBackgroundColor(bg);
+              if (matrix) root.addView(new MatrixView(this, accent),
+                new FrameLayout.LayoutParams(-1, -1));
+
+              LinearLayout col = new LinearLayout(this);
+              col.setOrientation(LinearLayout.VERTICAL);
+              col.setPadding(dp(48), dp(32), dp(48), dp(24));
+              root.addView(col, new FrameLayout.LayoutParams(-1, -1));
+
+              LinearLayout top = new LinearLayout(this);
+              top.setGravity(Gravity.CENTER_VERTICAL);
+              clock = new TextView(this);
+              clock.setTextColor(accent);
+              clock.setTextSize(32);
+              clock.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+              clock.setText(fmt.format(new Date()));
+              top.addView(clock, new LinearLayout.LayoutParams(0, -2, 1f));
+              top.addView(pill("theme", accent, bg, v -> {
+                theme = (theme + 1) % T.length;
+                prefs.edit().putInt("theme", theme).apply();
+                build();
+              }));
+              top.addView(pill(matrix ? "matrix: on" : "matrix: off", accent, bg, v -> {
+                matrix = !matrix;
+                prefs.edit().putBoolean("matrix", matrix).apply();
+                build();
+              }));
+              col.addView(top);
+
+              if (!wasDefault && !serviceOn()) {
+                LinearLayout note = new LinearLayout(this);
+                note.setGravity(Gravity.CENTER_VERTICAL);
+                note.setPadding(0, dp(16), 0, 0);
+                TextView msg = new TextView(this);
+                msg.setText("this launcher is temporary. to keep it as your home screen, press change it.");
+                msg.setTextColor(0xFFE6E6E6);
+                msg.setTextSize(15);
+                note.addView(msg, new LinearLayout.LayoutParams(0, -2, 1f));
+                note.addView(pill("change it", accent, bg, v -> requestDefault()));
+                note.addView(pill("force home", accent, bg, v -> {
+                  try { startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)); }
+                  catch (Exception e) { Toast.makeText(this, "open accessibility settings manually", Toast.LENGTH_LONG).show(); }
+                }));
+                col.addView(note);
+              }
+
+              GridView grid = new GridView(this);
+              grid.setNumColumns(6);
+              grid.setVerticalSpacing(dp(10));
+              grid.setHorizontalSpacing(dp(10));
+              grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
+              grid.setSelector(box((accent & 0x00FFFFFF) | 0x33000000, accent));
+              grid.setAdapter(new BaseAdapter() {
+                public int getCount() { return apps.size(); }
+                public Object getItem(int i) { return apps.get(i); }
+                public long getItemId(int i) { return i; }
+                public View getView(int i, View cv, ViewGroup parent) {
+                  App a = apps.get(i);
+                  LinearLayout c = new LinearLayout(MainActivity.this);
+                  c.setOrientation(LinearLayout.VERTICAL);
+                  c.setGravity(Gravity.CENTER);
+                  c.setPadding(dp(8), dp(14), dp(8), dp(14));
+                  ImageView iv = new ImageView(MainActivity.this);
+                  iv.setImageDrawable(a.icon);
+                  c.addView(iv, new LinearLayout.LayoutParams(dp(72), dp(72)));
+                  TextView t = new TextView(MainActivity.this);
+                  t.setText(a.label);
+                  t.setTextColor(0xFFE6E6E6);
+                  t.setTextSize(14);
+                  t.setSingleLine();
+                  t.setEllipsize(TextUtils.TruncateAt.END);
+                  t.setGravity(Gravity.CENTER);
+                  c.addView(t);
+                  return c;
+                }
+              });
+              grid.setOnItemClickListener((p, v, i, id) -> {
+                try { startActivity(apps.get(i).intent); }
+                catch (Exception e) { Toast.makeText(this, "cannot open", Toast.LENGTH_SHORT).show(); }
+              });
+              LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(-1, 0, 1f);
+              gp.topMargin = dp(20);
+              col.addView(grid, gp);
+
+              setContentView(root);
+              grid.requestFocus();
+            }
+          }
+          EOF
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neon-launcher-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest -y --cleanup-tag || true
+          gh release create latest app/build/outputs/apk/debug/app-debug.apk --title latest --notes "latest build"
